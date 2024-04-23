@@ -61,18 +61,60 @@ export class ReferencesModel implements SymbolItemNavigation<FileItem | Referenc
 	readonly items: FileItem[] = [];
 
 	constructor(locations: vscode.Location[] | vscode.LocationLink[]) {
+
+		// function sharedStart(array: string[]) {
+		// 	var A = array.concat().sort(),
+		// 		a1 = A[0], a2 = A[A.length - 1], L = a1.length, i = 0;
+		// 	while (i < L && a1.charAt(i) === a2.charAt(i)) i++;
+		// 	return a1.substring(0, i);
+		// }
 		let last: FileItem | undefined;
-		for (const item of locations.sort(ReferencesModel._compareLocations)) {
+		const filesMap = new Map<string, FileItem>()
+		const sortedLocations = locations.sort(ReferencesModel._compareLocations)
+		// const commonPrefix = sharedStart(sortedLocations.map((item) => {
+		// 	const loc = item instanceof vscode.Location
+		// 		? item
+		// 		: new vscode.Location(item.targetUri, item.targetRange)
+		// 	return loc.uri.path
+		// }))
+		// let root: FileItem | undefined
+		const rootDirPath = vscode.workspace.workspaceFolders?.[0].uri.path ?? '';
+		for (const item of sortedLocations) {
 			const loc = item instanceof vscode.Location
 				? item
 				: new vscode.Location(item.targetUri, item.targetRange);
-
+			// if (!root) {
+			// 	root = new FileItem(loc.uri.with({ path: '/' }), [], [], null, true, this)
+			// }
 			if (!last || ReferencesModel._compareUriIgnoreFragment(last.uri, loc.uri) !== 0) {
-				last = new FileItem(loc.uri.with({ fragment: '' }), [], this);
-				this.items.push(last);
+				const cleanLoc = loc.uri.with({ fragment: '', path: loc.uri.path.replace(rootDirPath, '') });
+				const allPathParts = cleanLoc.path.split('/')
+				const pathParts = [];
+				for (const name of allPathParts) {
+					pathParts.push(name);
+					const path = pathParts.join('/')
+					const existingFileItemParent = pathParts.length > 1 ? filesMap.get(pathParts.slice(0, pathParts.length - 1).join('/')) : null;
+					let currentFileItem = filesMap.get(path);
+					if (!currentFileItem) {
+						currentFileItem = new FileItem(cleanLoc.with({ path }), [], [], existingFileItemParent ?? null, cleanLoc.path !== path, this)
+						filesMap.set(path, currentFileItem);
+						// this.items.push(currentFileItem);
+					}
+					if (existingFileItemParent && !existingFileItemParent?.children.find((child) => child === currentFileItem)) {
+						existingFileItemParent.children.push(currentFileItem)
+					}
+					last = currentFileItem
+				}
+				// if (last)
+				// 	this.items.push(last);
+				// last = new FileItem(cleanLoc, [], [], false, this);
 			}
-			last.references.push(new ReferenceItem(loc, last));
+			if (last)
+				last.references.push(new ReferenceItem(loc, last));
 		}
+		const root = filesMap.get('')
+		if (root)
+			this.items.push(...root.children)
 	}
 
 	private static _compareUriIgnoreFragment(a: vscode.Uri, b: vscode.Uri): number {
@@ -279,8 +321,8 @@ class ReferencesTreeDataProvider implements vscode.TreeDataProvider<FileItem | R
 			const result = new vscode.TreeItem(element.uri);
 			result.contextValue = 'file-item';
 			result.description = true;
-			result.iconPath = vscode.ThemeIcon.File;
-			result.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
+			result.iconPath = element.isDir ? vscode.ThemeIcon.Folder : vscode.ThemeIcon.File;
+			result.collapsibleState = element.isDir ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed;
 			return result;
 
 		} else {
@@ -314,13 +356,13 @@ class ReferencesTreeDataProvider implements vscode.TreeDataProvider<FileItem | R
 			return this._model.items;
 		}
 		if (element instanceof FileItem) {
-			return element.references;
+			return element.isDir ? element.children : element.references;
 		}
 		return undefined;
 	}
 
 	getParent(element: FileItem | ReferenceItem) {
-		return element instanceof ReferenceItem ? element.file : undefined;
+		return element instanceof ReferenceItem ? element.file : element.parent;
 	}
 }
 
@@ -329,6 +371,9 @@ export class FileItem {
 	constructor(
 		readonly uri: vscode.Uri,
 		readonly references: Array<ReferenceItem>,
+		readonly children: Array<FileItem>,
+		readonly parent: FileItem | null,
+		readonly isDir: boolean,
 		readonly model: ReferencesModel
 	) { }
 
